@@ -23,7 +23,8 @@ type Source struct {
 	Query string
 }
 
-// DefaultSources returns the searches the upstream tool used.
+// DefaultSources returns the three discovery conventions: the funded-campaign
+// label, a plain bounty label, and the word in the title.
 func DefaultSources() []Source {
 	return []Source{
 		{Name: "algora", Query: `label:"💎 Bounty" is:issue is:open`},
@@ -40,29 +41,35 @@ type Searcher interface {
 	SearchIssues(ctx context.Context, query string, limit int) ([]github.Issue, error)
 }
 
-// RepoDetails is the per-repository context used to score competition.
-type RepoDetails = github.RepoDetails
-
 // Enricher fills in repository language and open PR counts.
 type Enricher interface {
-	RepoInfo(ctx context.Context, repo string) (RepoDetails, error)
+	RepoInfo(ctx context.Context, repo string) (model.RepoDetails, error)
 }
 
-// DefaultEnrichMaxRepos bounds how many repositories a single scan enriches.
-// Enrichment costs two requests per repository, so an unbounded pass would
-// exhaust an unauthenticated budget on the first scan.
-const DefaultEnrichMaxRepos = 50
+const (
+	// DefaultEnrichMaxRepos bounds how many repositories a single authenticated
+	// scan enriches. Enrichment costs two requests per repository, so an
+	// unbounded pass would exhaust the budget on the first scan.
+	DefaultEnrichMaxRepos = 50
+	// UnauthenticatedEnrichMaxRepos is the same bound without a token, where the
+	// hourly budget is two orders of magnitude smaller.
+	UnauthenticatedEnrichMaxRepos = 10
+)
 
 // Options configures a scan.
 type Options struct {
-	Sources        []Source
-	Languages      []string
-	Limit          int // 0 means "no truncation" (capped by the API at 1000 per query)
-	MinAmount      int64
-	MaxComments    int // -1 disables the filter
-	Sort           string
-	Enricher       Enricher // nil disables enrichment
-	EnrichMaxRepos int      // 0 uses DefaultEnrichMaxRepos
+	Sources     []Source
+	Languages   []string
+	Limit       int // 0 means "no truncation" (capped by the API at 1000 per query)
+	MinAmount   int64
+	MaxComments int // -1 disables the filter
+	Sort        string
+	Enricher    Enricher // nil disables enrichment
+	// Authenticated reports whether requests carry a token. It decides the
+	// default enrichment budget, which is policy the scanner owns.
+	Authenticated bool
+	// EnrichMaxRepos overrides the default budget when greater than zero.
+	EnrichMaxRepos int
 	Logf           func(string, ...any)
 }
 
@@ -137,11 +144,7 @@ func Run(ctx context.Context, searcher Searcher, opt Options) ([]model.Bounty, e
 		rank.Apply(bounties)
 		rank.Sort(bounties, opt.Sort)
 
-		budget := opt.EnrichMaxRepos
-		if budget <= 0 {
-			budget = DefaultEnrichMaxRepos
-		}
-		enrich(ctx, opt.Enricher, bounties, budget, logf)
+		enrich(ctx, opt.Enricher, bounties, enrichBudget(opt), logf)
 	}
 
 	rank.Apply(bounties)
@@ -151,6 +154,18 @@ func Run(ctx context.Context, searcher Searcher, opt Options) ([]model.Bounty, e
 		bounties = bounties[:opt.Limit]
 	}
 	return bounties, nil
+}
+
+// enrichBudget decides how many repositories a scan may enrich. Without a
+// token the hourly budget is far smaller, so the cap shrinks with it.
+func enrichBudget(opt Options) int {
+	if opt.EnrichMaxRepos > 0 {
+		return opt.EnrichMaxRepos
+	}
+	if !opt.Authenticated {
+		return UnauthenticatedEnrichMaxRepos
+	}
+	return DefaultEnrichMaxRepos
 }
 
 func everySearchFailed(failures []string) error {
@@ -279,7 +294,7 @@ func enrich(ctx context.Context, enricher Enricher, bounties []model.Bounty, bud
 	}
 
 	type result struct {
-		details RepoDetails
+		details model.RepoDetails
 		err     error
 	}
 
