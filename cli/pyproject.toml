@@ -1,0 +1,19 @@
+[project]
+name = "bounty-radar"
+version = "0.1.0"
+description = "Find and rank paid open-source bounties on GitHub"
+requires-python = ">=3.10"
+dependencies = [
+    "rich>=13.7",
+    "textual>=8.2.8,<9",
+]
+
+[project.scripts]
+bounty = "bounty.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bounty"]
