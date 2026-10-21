@@ -9,6 +9,26 @@ competition, and prints one clean JSON array that pipes straight into `jq`.
 
 ---
 
+## Screenshots
+
+**The dashboard, ranked by score.** A live scan of paid GitHub issues. The `$9,000`
+issue leads because it is barely contested — 7 comments, no open pull requests — not
+because it is merely the largest number on screen. The right-hand pane holds the full
+record for the selected row: amount, competition, score, comment and open-PR counts,
+language, source, and when it was opened.
+
+![The bounty dashboard sorted by score, with the detail pane open on the selected issue](Screenshots/Screenshot-1.png)
+
+**The same scan, sorted by least contested** — `s` reorders locally, so switching
+costs no GitHub request. `y` copies the selected issue's URL to the clipboard.
+
+![The bounty dashboard sorted by least contested, with a URL copied confirmation](Screenshots/Screenshot-2.png)
+
+Both screenshots are the real `bounty tui` in a real terminal, including the warning
+about the GitHub rate limit in the status bar.
+
+---
+
 ## Why this exists
 
 Bounty hunting on GitHub is a search problem, and the search is bad.
@@ -70,6 +90,7 @@ core/          Go engine — builds the bounty-core binary
     rank/      competition scoring and sort orders
     scan/      query fan-out, filters, enrichment, orchestration
 cli/           Python front ends (`bounty`): table, history, JSON passthrough, TUI
+Screenshots/   Dashboard screenshots used by this README
 tests/         Offline integration tests against a stub GitHub API
 ```
 
@@ -288,6 +309,8 @@ are shown in the status bar instead).
 bounty tui
 bounty tui --min 1000 --lang go
 ```
+
+See the [screenshots](#screenshots) for what this looks like in a real terminal.
 
 A scan runs as soon as the dashboard opens, and every refresh is saved like a normal
 scan, so "new" markers and `bounty history` stay consistent. `--sort` sets the opening
