@@ -2,6 +2,14 @@
 // the JSON contract consumed by the Python CLI/TUI.
 package model
 
+// RepoDetails is the per-repository context used to score competition.
+// It lives here so the scanner and the transport layer can share it without
+// either one importing the other.
+type RepoDetails struct {
+	Language string
+	OpenPRs  int
+}
+
 // Bounty is a single payable open-source task found on GitHub.
 //
 // JSON field names are part of the public contract: the Python CLI forwards
