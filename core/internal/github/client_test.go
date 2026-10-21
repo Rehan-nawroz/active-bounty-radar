@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -287,5 +289,89 @@ func TestRepoInfo(t *testing.T) {
 		t.Errorf("open PRs = %d, want 3", details.OpenPRs)
 	}
 }
+
+func TestTransportErrorsAreShortenedAndNotRetried(t *testing.T) {
+	// A DNS failure will not heal in 500ms: it must fail on the first attempt
+	// and must not leak the full percent-encoded search URL.
+	dns := &net.DNSError{Err: "no such host", Name: "api.example.test", IsNotFound: true}
+	client := New(
+		WithHTTPClient(&http.Client{Transport: failingTransport{err: &url.Error{
+			Op:  "Get",
+			URL: "https://api.example.test/search/issues?q=label%3Abounty&per_page=100",
+			Err: dns,
+		}}}),
+		WithSleeper(func(_ context.Context, _ time.Duration) error {
+			t.Error("permanent transport errors must not be retried")
+			return nil
+		}),
+	)
+
+	_, err := client.SearchIssues(context.Background(), "label:bounty", 10)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "/search/issues") {
+		t.Errorf("error should name the path: %v", err)
+	}
+	if strings.Contains(err.Error(), "per_page") {
+		t.Errorf("error leaks the query string: %v", err)
+	}
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		t.Errorf("error should stay unwrappable for the caller: %v", err)
+	}
+}
+
+func TestTransportTimeoutsAreRetried(t *testing.T) {
+	var sleeps int
+	client := New(
+		WithHTTPClient(&http.Client{Transport: failingTransport{err: &url.Error{
+			Op:  "Get",
+			URL: "https://api.example.test/search/issues",
+			Err: timeoutError{},
+		}}}),
+		WithMaxRetries(2),
+		WithSleeper(func(context.Context, time.Duration) error {
+			sleeps++
+			return nil
+		}),
+	)
+
+	if _, err := client.SearchIssues(context.Background(), "label:bounty", 10); err == nil {
+		t.Fatal("expected an error")
+	}
+	if sleeps != 2 {
+		t.Fatalf("retried %d times, want 2", sleeps)
+	}
+}
+
+func TestHTTPErrorHasNoQueryString(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := New(WithBaseURL(srv.URL), WithSleeper(noSleep))
+	_, err := client.SearchIssues(context.Background(), "label:bounty", 10)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "per_page") || strings.Contains(err.Error(), "q=") {
+		t.Fatalf("error leaks the query string: %v", err)
+	}
+	if strings.HasSuffix(err.Error(), ": ") {
+		t.Fatalf("error has a dangling separator for an empty body: %q", err.Error())
+	}
+}
+
+type failingTransport struct{ err error }
+
+func (f failingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, f.err }
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
 
 func noSleep(context.Context, time.Duration) error { return nil }
