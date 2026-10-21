@@ -119,11 +119,13 @@ func Run(ctx context.Context, searcher Searcher, opt Options) ([]model.Bounty, e
 			}
 		}
 	}
+	if succeeded == 0 {
+		// One compact error instead of a per-source warning followed by the
+		// same message again: when everything fails, the causes are what matter.
+		return nil, everySearchFailed(failures)
+	}
 	for _, f := range failures {
 		logf("search failed: %s", f)
-	}
-	if succeeded == 0 {
-		return nil, fmt.Errorf("every search failed: %s", strings.Join(failures, "; "))
 	}
 
 	bounties = dedup.Bounties(bounties)
@@ -149,6 +151,24 @@ func Run(ctx context.Context, searcher Searcher, opt Options) ([]model.Bounty, e
 		bounties = bounties[:opt.Limit]
 	}
 	return bounties, nil
+}
+
+func everySearchFailed(failures []string) error {
+	unique := make([]string, 0, len(failures))
+	seen := make(map[string]bool, len(failures))
+	for _, failure := range failures {
+		// Drop the "source: " prefix so identical causes collapse together.
+		cause := failure
+		if i := strings.Index(cause, ": "); i >= 0 {
+			cause = cause[i+2:]
+		}
+		if seen[cause] {
+			continue
+		}
+		seen[cause] = true
+		unique = append(unique, cause)
+	}
+	return fmt.Errorf("every search failed: %s", strings.Join(unique, "; "))
 }
 
 func expandQueries(opt Options) []querySpec {
