@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Rehan-nawroz/active-bounty-radar/core/internal/model"
 )
@@ -150,6 +151,88 @@ func TestUsageErrors(t *testing.T) {
 				t.Errorf("stdout should stay empty on usage errors, got %q", stdout.String())
 			}
 		})
+	}
+}
+
+func TestInvalidFlagValues(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"negative limit", []string{"scan", "--limit", "-5"}, "--limit"},
+		{"max-comments below -1", []string{"scan", "--max-comments", "-7"}, "--max-comments"},
+		{"negative min", []string{"scan", "--min", "-500"}, "--min"},
+		{"zero timeout", []string{"scan", "--timeout", "0s"}, "--timeout"},
+		{"negative timeout", []string{"scan", "--timeout", "-5s"}, "--timeout"},
+		{"unknown sort", []string{"scan", "--sort", "bogus"}, "--sort"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(tc.args, &stdout, &stderr); code != 2 {
+				t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tc.want) {
+				t.Errorf("stderr = %q, want it to mention %q", stderr.String(), tc.want)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", stdout.String())
+			}
+		})
+	}
+}
+
+// TestRepeatedFlagsAccumulate guards against the plain-string flag trap where
+// "--lang go --lang rust" silently scans only rust.
+func TestRepeatedFlagsAccumulate(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("q"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total_count":0,"incomplete_results":false,"items":[]}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"scan", "--base-url", srv.URL, "--source", "algora", "--source", "title",
+		"--lang", "go", "--lang", "rust"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr.String())
+	}
+	if len(queries) != 4 {
+		t.Fatalf("sent %d queries, want 4 (2 sources × 2 languages): %v", len(queries), queries)
+	}
+	joined := strings.Join(queries, "\n")
+	for _, want := range []string{"language:go", "language:rust", `label:"💎 Bounty"`, "bounty in:title"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("queries missing %q: %v", want, queries)
+		}
+	}
+}
+
+func TestTimeoutIsReportedAsTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total_count":0,"incomplete_results":false,"items":[]}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"scan", "--base-url", srv.URL, "--timeout", "80ms"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 (stderr: %s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "timed out after 80ms") {
+		t.Fatalf("stderr = %q, want a timeout explanation", stderr.String())
 	}
 }
 
