@@ -52,6 +52,11 @@ func Apply(bounties []model.Bounty) {
 	}
 }
 
+// SortKeys lists the accepted sort orders, best first in the help text.
+func SortKeys() []string {
+	return []string{"score", "amount", "comments", "newest", "oldest"}
+}
+
 // Sort orders bounties in place. Unknown keys fall back to score.
 func Sort(bounties []model.Bounty, key string) {
 	less := lessFor(strings.ToLower(strings.TrimSpace(key)))
