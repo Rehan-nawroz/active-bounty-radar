@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Rehan-nawroz/active-bounty-radar/core/internal/github"
+	"github.com/Rehan-nawroz/active-bounty-radar/core/internal/model"
 )
 
 type fakeSearcher struct {
@@ -33,13 +34,13 @@ func (f *fakeSearcher) SearchIssues(_ context.Context, query string, _ int) ([]g
 }
 
 type fakeEnricher struct {
-	details map[string]RepoDetails
+	details map[string]model.RepoDetails
 	fail    map[string]bool
 }
 
-func (f *fakeEnricher) RepoInfo(_ context.Context, repo string) (RepoDetails, error) {
+func (f *fakeEnricher) RepoInfo(_ context.Context, repo string) (model.RepoDetails, error) {
 	if f.fail[repo] {
-		return RepoDetails{Language: "Go"}, errors.New("boom")
+		return model.RepoDetails{Language: "Go"}, errors.New("boom")
 	}
 	return f.details[repo], nil
 }
@@ -187,7 +188,7 @@ func TestRunEnrichesRepositories(t *testing.T) {
 	searcher := &fakeSearcher{results: map[string][]github.Issue{
 		"bounty in:title": {issue(1, "Bounty $1,000", 1)},
 	}}
-	enricher := &fakeEnricher{details: map[string]RepoDetails{
+	enricher := &fakeEnricher{details: map[string]model.RepoDetails{
 		"acme/widget": {Language: "Go", OpenPRs: 4},
 	}}
 
@@ -260,6 +261,26 @@ func TestRunFailsWhenEverySearchFails(t *testing.T) {
 	}
 	if len(warnings) != 0 {
 		t.Errorf("warnings = %v, want none when every search fails", warnings)
+	}
+}
+
+func TestEnrichBudgetFollowsAuthentication(t *testing.T) {
+	tests := []struct {
+		name string
+		opt  Options
+		want int
+	}{
+		{"tokenless scan", Options{}, UnauthenticatedEnrichMaxRepos},
+		{"authenticated scan", Options{Authenticated: true}, DefaultEnrichMaxRepos},
+		{"explicit override", Options{Authenticated: true, EnrichMaxRepos: 3}, 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := enrichBudget(tc.opt); got != tc.want {
+				t.Fatalf("enrichBudget() = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

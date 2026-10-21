@@ -127,11 +127,10 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	}
 	if enrich {
 		opt.Enricher = client
-		opt.EnrichMaxRepos = 10 // two requests per repo without a token
-		if client.HasToken() {
-			opt.EnrichMaxRepos = scan.DefaultEnrichMaxRepos
-		} else {
-			fmt.Fprintln(stderr, "note: enrichment without GITHUB_TOKEN is limited to 60 requests/hour; only 10 repositories will be enriched")
+		opt.Authenticated = client.HasToken()
+		if !opt.Authenticated {
+			fmt.Fprintf(stderr, "note: enrichment without GITHUB_TOKEN is limited to 60 requests/hour; only %d repositories will be enriched\n",
+				scan.UnauthenticatedEnrichMaxRepos)
 		}
 	}
 	if *verbose {
