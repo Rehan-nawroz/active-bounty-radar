@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Rehan-nawroz/active-bounty-radar/core/internal/model"
 )
 
 const (
@@ -85,12 +87,6 @@ type searchResponse struct {
 	TotalCount        int     `json:"total_count"`
 	IncompleteResults bool    `json:"incomplete_results"`
 	Items             []Issue `json:"items"`
-}
-
-// RepoDetails is the per-repository context used to judge competition.
-type RepoDetails struct {
-	Language string
-	OpenPRs  int
 }
 
 // Client is a GitHub REST client. It is safe for concurrent use.
@@ -225,16 +221,16 @@ func (c *Client) SearchIssues(ctx context.Context, query string, limit int) ([]I
 // RepoInfo returns the repository language and its number of open pull
 // requests. The PR count is a proxy for how contended a repository is; it costs
 // one extra search request and is only used when enrichment is enabled.
-func (c *Client) RepoInfo(ctx context.Context, repo string) (RepoDetails, error) {
+func (c *Client) RepoInfo(ctx context.Context, repo string) (model.RepoDetails, error) {
 	var meta struct {
 		Language string `json:"language"`
 	}
 	if err := c.get(ctx, "/repos/"+repo, nil, &meta); err != nil {
-		return RepoDetails{}, err
+		return model.RepoDetails{}, err
 	}
 
 	count, err := c.CountIssues(ctx, "repo:"+repo+" is:pr is:open")
-	details := RepoDetails{Language: meta.Language, OpenPRs: count}
+	details := model.RepoDetails{Language: meta.Language, OpenPRs: count}
 	if err != nil {
 		// Language alone is still useful.
 		return details, fmt.Errorf("open PR count for %s: %w", repo, err)
