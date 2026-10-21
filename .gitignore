@@ -1,1 +1,12 @@
+# Planning docs stay local until they are polished
 /docs/plans
+
+# Built binaries
+/bin/
+*.exe
+
+# Python (cli/ arrives in M2)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
