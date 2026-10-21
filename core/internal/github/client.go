@@ -8,8 +8,10 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -38,6 +40,9 @@ func (e *HTTPError) Error() string {
 	body := strings.TrimSpace(e.Body)
 	if len(body) > 200 {
 		body = body[:200] + "…"
+	}
+	if body == "" {
+		return fmt.Sprintf("github: HTTP %d for %s", e.Status, e.URL)
 	}
 	return fmt.Sprintf("github: HTTP %d for %s: %s", e.Status, e.URL, body)
 }
@@ -275,8 +280,10 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			lastErr = err
-			if attempt >= c.maxRetries {
+			// Trim the URL: it carries percent-encoded search queries that swamp
+			// a terminal and add nothing over the path.
+			lastErr = transportError(err, path)
+			if !retryableTransportError(err) || attempt >= c.maxRetries {
 				return lastErr
 			}
 			if err := c.sleep(ctx, backoff(attempt)); err != nil {
@@ -315,7 +322,7 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 			continue
 
 		case resp.StatusCode >= 500:
-			lastErr = &HTTPError{Status: resp.StatusCode, URL: endpoint, Body: string(body)}
+			lastErr = &HTTPError{Status: resp.StatusCode, URL: path, Body: string(body)}
 			if attempt >= c.maxRetries {
 				return lastErr
 			}
@@ -326,7 +333,7 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 			continue
 
 		default:
-			return &HTTPError{Status: resp.StatusCode, URL: endpoint, Body: string(body)}
+			return &HTTPError{Status: resp.StatusCode, URL: path, Body: string(body)}
 		}
 	}
 }
@@ -394,6 +401,33 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+// transportError keeps the failure reason but drops the query string.
+// http.Client can wrap the transport error in more than one *url.Error, and
+// each layer repeats the full URL, so unwrap them all before formatting.
+func transportError(err error, path string) error {
+	cause := err
+	for i := 0; i < 4; i++ {
+		uerr, ok := cause.(*url.Error)
+		if !ok || uerr.Err == nil {
+			break
+		}
+		cause = uerr.Err
+	}
+	return fmt.Errorf("github: %s: %w", path, cause)
+}
+
+// retryableTransportError reports whether a transport failure deserves another
+// attempt. Connection refusals and DNS failures do not heal within a backoff
+// delay, so retrying them only burns the caller's timeout and hides the real
+// cause behind a "context deadline exceeded".
+func retryableTransportError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func errorBody(body []byte) string {
