@@ -22,12 +22,31 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
+from textual.events import Resize
 from textual.widgets import DataTable, Footer, Input, Static
 
 from . import render
 
 MIN_AMOUNTS = (0, 100, 500, 1000, 5000, 10000)
 SORT_KEYS = ("score", "amount", "comments", "newest", "oldest")
+
+# Layout, in table cells: (heading, column key, fixed width). The title column
+# takes whatever is left, so its width is computed rather than listed.
+REPO_WIDTH = 22
+COLUMNS = (
+    ("", "new", 1),
+    ("Amount", "amount", 9),
+    ("Repo", "repo", REPO_WIDTH),
+    ("Title", "title", None),
+    ("Cmt", "cmt", 4),
+    ("PRs", "prs", 3),
+    ("Comp", "comp", 5),
+)
+CELL_PADDING = 2  # one cell either side of every column
+FIXED_WIDTH = sum(width for _, _, width in COLUMNS if width) + CELL_PADDING * len(COLUMNS)
+MIN_TITLE_WIDTH = 18
+DETAIL_WIDTH = 36
+DETAIL_MIN_WIDTH = 110
 SORT_LABELS = {
     "score": "score",
     "amount": "amount",
@@ -133,8 +152,9 @@ def run(
     *,
     db_label: str = "",
     opener: Callable[[str], object] = webbrowser.open,
+    sort_key: str = "score",
 ) -> None:
-    BountyTUI(scan, db_label=db_label, opener=opener).run()
+    BountyTUI(scan, db_label=db_label, opener=opener, sort_key=sort_key).run()
 
 
 class BountyTUI(App[None]):
@@ -206,6 +226,7 @@ class BountyTUI(App[None]):
         *,
         db_label: str = "",
         opener: Callable[[str], object] = webbrowser.open,
+        sort_key: str = "score",
     ) -> None:
         super().__init__()
         self.scan = scan
@@ -221,7 +242,7 @@ class BountyTUI(App[None]):
         self.new_only = False
         self.language = ""
 
-        self.sort_key = "score"
+        self.sort_key = sort_key if sort_key in SORT_KEYS else "score"
         self.scanning = False
         self.stamp = ""
         self.problem = ""
@@ -251,46 +272,50 @@ class BountyTUI(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self._apply_layout()
+        self._apply_layout(self.size.width)
         self.query_one(DataTable).focus()
         self._refresh_status()
         self._start_scan()
 
-    def on_resize(self) -> None:
+    def on_resize(self, event: Resize) -> None:
         # The title column absorbs whatever the fixed columns leave behind, and
-        # the detail pane gives way on narrow terminals.
+        # the detail pane gives way on narrow terminals. The event carries the
+        # new size; self.size is still the old one inside this handler.
+        width = event.size.width
         if not self._title_width:
             return
         hidden = self.query_one("#detail").has_class("hidden")
-        if (not self._detail_fits()) != hidden or self._width_for_title() != self._title_width:
-            self._apply_layout()
+        if (
+            (not self._detail_fits(width)) != hidden
+            or self._width_for_title(width) != self._title_width
+        ):
+            self._apply_layout(width)
             self._rebuild()
 
-    def _detail_fits(self) -> bool:
+    def _detail_fits(self, width: int) -> bool:
         if self.detail_override is not None:
             return self.detail_override
-        return self.size.width >= 110
+        return width >= DETAIL_MIN_WIDTH
 
-    def _width_for_title(self) -> int:
-        # Fixed columns (44) plus two cells of padding each (14).
-        pane = 0 if self.query_one("#detail").has_class("hidden") else 36
-        return max(18, self.size.width - 58 - pane)
+    def _width_for_title(self, width: int) -> int:
+        pane = 0 if self.query_one("#detail").has_class("hidden") else DETAIL_WIDTH
+        return max(MIN_TITLE_WIDTH, width - FIXED_WIDTH - pane)
 
-    def _apply_layout(self) -> None:
-        self.query_one("#detail").set_class(not self._detail_fits(), "hidden")
-        self._build_columns()
+    def _apply_layout(self, width: int | None = None) -> None:
+        width = self.size.width if width is None else width
+        self.query_one("#detail").set_class(not self._detail_fits(width), "hidden")
+        self._build_columns(width)
 
-    def _build_columns(self) -> None:
+    def _build_columns(self, width: int) -> None:
         table = self.query_one(DataTable)
-        self._title_width = self._width_for_title()
+        self._title_width = self._width_for_title(width)
         table.clear(columns=True)
-        table.add_column("", key="new", width=1)
-        table.add_column("Amount", key="amount", width=9)
-        table.add_column("Repo", key="repo", width=22)
-        table.add_column("Title", key="title", width=self._title_width)
-        table.add_column("Cmt", key="cmt", width=4)
-        table.add_column("PRs", key="prs", width=3)
-        table.add_column("Comp", key="comp", width=5)
+        for heading, key, column_width in COLUMNS:
+            table.add_column(
+                heading,
+                key=key,
+                width=self._title_width if column_width is None else column_width,
+            )
 
     # -- scanning ----------------------------------------------------------
 
@@ -364,7 +389,7 @@ class BountyTUI(App[None]):
         return (
             Text("*", style="bold yellow") if is_new else Text(""),
             Text(render.money(bounty.get("amount_usd")), justify="right"),
-            fit(str(bounty.get("repo") or ""), 22),
+            fit(str(bounty.get("repo") or ""), REPO_WIDTH),
             fit(str(bounty.get("title") or ""), self._title_width),
             Text(str(bounty.get("comments") or 0), justify="right"),
             Text(str(bounty.get("open_prs") or 0), justify="right"),
@@ -497,7 +522,7 @@ class BountyTUI(App[None]):
 
     def action_toggle_detail(self) -> None:
         # The first press overrides the automatic choice for this session.
-        self.detail_override = not self._detail_fits()
+        self.detail_override = not self._detail_fits(self.size.width)
         self._apply_layout()
         self._rebuild()
 

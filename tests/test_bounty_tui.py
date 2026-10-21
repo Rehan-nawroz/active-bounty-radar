@@ -18,7 +18,7 @@ import pytest
 from rich.console import Console
 from textual.widgets import DataTable, Input, Static
 
-from bounty import cli, render, tui
+from bounty import cli, core_bridge, render, tui
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -208,6 +208,80 @@ async def _filters(app) -> None:
         await pilot.press("m")  # $100 floor: the unknown-amount bounty drops
         assert table.row_count == 2
         assert "min $100" in status(app)
+
+
+def test_resize_applies_the_new_terminal_size():
+    app = tui.BountyTUI(lambda: result())
+    asyncio.run(_resizing(app))
+
+
+async def _resizing(app) -> None:
+    async with app.run_test(size=(120, 32)) as pilot:
+        await settle(app, pilot)
+        detail = app.query_one("#detail")
+        table = app.query_one(DataTable)
+
+        assert not detail.has_class("hidden")
+        assert app._title_width == 26  # 120 - 58 fixed - 36 pane
+        assert table.row_count == 3
+
+        await pilot.resize_terminal(80, 24)
+        await pilot.pause()
+
+        # The pane yields and the title column absorbs its columns.
+        assert detail.has_class("hidden")
+        assert app._title_width == 22  # 80 - 58 fixed
+        assert table.row_count == 3
+        assert len(table.columns) == 7
+
+        await pilot.resize_terminal(120, 32)
+        await pilot.pause()
+
+        assert not detail.has_class("hidden")
+        assert app._title_width == 26
+        assert table.row_count == 3
+
+
+def test_sort_flag_seeds_the_dashboard():
+    contested = bounty(1, amount=10_000, comments=9, title="Contested but rich")
+    quiet = bounty(2, amount=5_000, comments=0, title="Cheap but quiet")
+    # Amount order is #1 then #2; score order is the reverse.
+    rows = [contested, quiet]
+
+    app = tui.BountyTUI(lambda: tui.ScanResult(rows, frozenset(), ""), sort_key="amount")
+    asyncio.run(_seeded_sort(app, rows))
+
+
+async def _seeded_sort(app, rows) -> None:
+    async with app.run_test(size=(120, 32)) as pilot:
+        await settle(app, pilot)
+
+        assert app.sort_key == "amount"
+        assert [b["id"] for b in app.visible()] == [
+            "acme/widget#1",
+            "acme/widget#2",
+        ]
+
+
+def test_unknown_sort_key_falls_back_to_score():
+    app = tui.BountyTUI(lambda: result(), sort_key="bogus")
+    assert app.sort_key == "score"
+
+
+def test_cmd_tui_passes_the_flags_to_the_dashboard(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    monkeypatch.setattr(cli, "_has_tty", lambda: True)
+    monkeypatch.setattr(core_bridge, "find_core", lambda explicit=None: tmp_path / "fake-core")
+    monkeypatch.setattr(tui, "run", lambda scan, **kwargs: captured.update(kwargs))
+
+    args = cli.build_parser().parse_args(
+        ["tui", "--sort", "amount", "--db", str(tmp_path / "history.db")]
+    )
+
+    assert cli.cmd_tui(args) == 0
+    assert captured["sort_key"] == "amount"
+    assert str(captured["db_label"]).endswith("history.db")
 
 
 def test_sort_cycles_and_reorders():

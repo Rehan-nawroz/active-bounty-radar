@@ -315,13 +315,17 @@ def _tui_scan(args: argparse.Namespace, core: Path) -> tui.ScanRunner:
     return scan
 
 
+def _has_tty() -> bool:
+    return sys.stdout.isatty()
+
+
 def cmd_tui(args: argparse.Namespace) -> int:
     problem = _validation_error(args)
     if problem:
         print(f"bounty: {problem}", file=sys.stderr)
         return 2
 
-    if not sys.stdout.isatty():
+    if not _has_tty():
         print(
             "bounty: `bounty tui` needs an interactive terminal; "
             "use `bounty scan` for pipes and scripts",
@@ -335,7 +339,11 @@ def cmd_tui(args: argparse.Namespace) -> int:
         print(f"bounty: {exc}", file=sys.stderr)
         return exc.returncode
 
-    tui.run(_tui_scan(args, core), db_label=str(_db_path(args.db)))
+    tui.run(
+        _tui_scan(args, core),
+        db_label=str(_db_path(args.db)),
+        sort_key=args.sort,
+    )
     return 0
 
 
