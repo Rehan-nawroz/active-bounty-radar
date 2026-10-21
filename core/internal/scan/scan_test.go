@@ -241,14 +241,25 @@ func TestRunSurvivesPartialSearchFailures(t *testing.T) {
 }
 
 func TestRunFailsWhenEverySearchFails(t *testing.T) {
-	searcher := &fakeSearcher{errs: map[string]error{"bounty": errors.New("nope")}}
+	// "is:issue" is present in every default query, so all of them fail.
+	searcher := &fakeSearcher{errs: map[string]error{"is:issue": errors.New("nope")}}
+	var warnings []string
 	_, err := Run(context.Background(), searcher, Options{
-		Sources:     []Source{{Name: "title", Query: "bounty in:title"}},
+		Sources:     DefaultSources(),
 		Limit:       10,
 		MaxComments: -1,
+		Logf:        func(format string, a ...any) { warnings = append(warnings, format) },
 	})
 	if err == nil {
 		t.Fatal("expected an error when every search fails")
+	}
+	// The same cause from three sources must appear once, not three times, and
+	// must not also be duplicated as per-source warnings.
+	if got := strings.Count(err.Error(), "nope"); got != 1 {
+		t.Errorf("cause appears %d times in %q, want 1", got, err.Error())
+	}
+	if len(warnings) != 0 {
+		t.Errorf("warnings = %v, want none when every search fails", warnings)
 	}
 }
 
