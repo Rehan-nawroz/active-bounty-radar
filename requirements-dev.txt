@@ -1,0 +1,5 @@
+# Python tooling for the integration tests in tests/.
+# Install into a project venv:
+#   uv venv .venv
+#   uv pip install --python .venv -r requirements-dev.txt
+pytest>=8.0
