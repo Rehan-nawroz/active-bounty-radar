@@ -1,186 +1,27 @@
-"""Integration tests for the bounty-core CLI.
+"""Integration tests for the bounty-core engine.
 
 These drive the built binary the way a user does: real argv, real process, real
-stdout/stderr. A local stub stands in for api.github.com so the tests are fast
-and never consume GitHub's rate limit.
+stdout/stderr. The stub GitHub server comes from conftest.py.
 
 Run with:
-    uv venv .venv
-    uv pip install --python .venv -r requirements-dev.txt
     .venv/Scripts/python -m pytest tests -q      # Windows
     .venv/bin/python -m pytest tests -q          # macOS / Linux
 """
 
 from __future__ import annotations
 
-import http.server
 import json
-import os
 import re
-import shutil
 import subprocess
-import threading
-import urllib.parse
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 
-# Three bounties: a $10K one, a $200 one written with a currency code, and one
-# with no amount at all. Amounts deliberately use the forms that trip naive
-# parsers.
-ITEMS = [
-    {
-        "number": 1,
-        "title": "[ Bounty $10K ] Fix the widget parser",
-        "html_url": "https://github.com/acme/widget/issues/1",
-        "repository_url": "https://api.github.com/repos/acme/widget",
-        "comments": 2,
-        "created_at": "2026-05-01T00:00:00Z",
-        "labels": [{"name": "\U0001f48e Bounty"}],
-    },
-    {
-        "number": 2,
-        "title": "Bounty: USD 200 for docs",
-        "html_url": "https://github.com/acme/docs/issues/2",
-        "repository_url": "https://api.github.com/repos/acme/docs",
-        "comments": 0,
-        "created_at": "2026-05-02T00:00:00Z",
-        "labels": [{"name": "bounty"}],
-    },
-    {
-        "number": 3,
-        "title": "Update the README",
-        "html_url": "https://github.com/acme/docs/issues/3",
-        "repository_url": "https://api.github.com/repos/acme/docs",
-        "comments": 12,
-        "created_at": "2026-05-03T00:00:00Z",
-        "labels": [{"name": "bounty"}],
-    },
-]
-
-
-class StubGitHub:
-    """A tiny stand-in for the GitHub search and repo APIs."""
-
-    def __init__(self, items=None):
-        self.items = ITEMS if items is None else items
-        self.requests: list[str] = []
-        self.script: list[tuple[int, dict, str]] = []
-        outer = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):  # noqa: N802 - stdlib naming
-                outer.requests.append(self.path)
-
-                if outer.script:
-                    status, headers, body = outer.script.pop(0)
-                    self.send_response(status)
-                    for name, value in headers.items():
-                        self.send_header(name, value)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    if body:
-                        self.wfile.write(body.encode())
-                    return
-
-                parsed = urllib.parse.urlparse(self.path)
-                query = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
-
-                if parsed.path == "/search/issues":
-                    payload = {
-                        "total_count": len(outer.matching(query)),
-                        "incomplete_results": False,
-                        "items": outer.matching(query),
-                    }
-                elif parsed.path.startswith("/repos/"):
-                    payload = {"language": "Go"}
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-
-                raw = json.dumps(payload).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers()
-                self.wfile.write(raw)
-
-            def log_message(self, *args):  # silence request logging
-                pass
-
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-
-    def matching(self, query: str) -> list[dict]:
-        if "\U0001f48e Bounty" in query:
-            return [self.items[0]]
-        if "in:title" in query or "label:bounty" in query:
-            return self.items[1:]
-        return []
-
-    def fail_next(self, status: int, headers=None, body: str = ""):
-        self.script.append((status, headers or {}, body))
-
-    @property
-    def url(self) -> str:
-        host, port = self.server.server_address[:2]
-        return f"http://{host}:{port}"
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def __exit__(self, *exc):
-        self.server.shutdown()
-        self.server.server_close()
-
-
-def _binary_path() -> Path:
-    override = os.environ.get("BOUNTY_CORE_BIN")
-    if override:
-        return Path(override)
-
-    name = "bounty-core.exe" if os.name == "nt" else "bounty-core"
-    built = ROOT / "bin" / name
-    if built.exists():
-        return built
-
-    go = os.environ.get("GO") or shutil.which("go")
-    if not go:
-        pytest.fail(
-            "bounty-core binary not found and no Go toolchain on PATH; "
-            "build it with: cd core && go build -o ../bin/bounty-core ."
-        )
-
-    built.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run([go, "build", "-o", str(built), "."], cwd=ROOT / "core", check=True)
-    return built
-
-
-@pytest.fixture(scope="session")
-def binary() -> Path:
-    return _binary_path()
-
-
-@pytest.fixture
-def stub():
-    with StubGitHub() as server:
-        yield server
-
-
-@pytest.fixture(scope="session")
-def jq() -> str:
-    found = os.environ.get("JQ") or shutil.which("jq")
-    if not found:
-        pytest.skip("jq is not installed (set JQ=/path/to/jq to run these tests)")
-    return found
-
 
 def scan(binary: Path, *args: str, token: str | None = None, timeout: int = 60):
+    import os
+
     env = {k: v for k, v in os.environ.items() if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
     if token:
         env["GITHUB_TOKEN"] = token
@@ -220,9 +61,9 @@ def test_scan_emits_pure_json(binary, stub):
     assert by_number[3]["amount_usd"] is None
 
 
-def test_empty_result_is_an_array(binary):
-    with StubGitHub(items=[]) as empty:
-        proc = scan(binary, "scan", "--base-url", empty.url)
+def test_empty_result_is_an_array(binary, stub_factory):
+    empty = stub_factory(items=[])
+    proc = scan(binary, "scan", "--base-url", empty.url)
     assert proc.returncode == 0
     assert proc.stdout.strip() == "[]"
 
@@ -313,14 +154,22 @@ def test_tokenless_enrichment_note(binary, stub):
 # --------------------------------------------------------------------------
 
 
-def documented_flags() -> set[str]:
+def engine_section() -> str:
+    """The engine's flag table only, so the CLI table cannot confuse parity."""
     text = README.read_text(encoding="utf-8")
-    return set(re.findall(r"^\| `(--[a-z-]+)", text, flags=re.MULTILINE))
+    start = text.index("## Usage")
+    end = text.index("## Output format")
+    return text[start:end]
+
+
+def documented_flags() -> set[str]:
+    return set(re.findall(r"^\| `(--[a-z-]+)", engine_section(), flags=re.MULTILINE))
 
 
 def documented_fields() -> list[str]:
+    """The output-format table only, so later tables cannot look like fields."""
     text = README.read_text(encoding="utf-8")
-    table = text.split("## Output format", 1)[1]
+    table = text.split("## Output format", 1)[1].split("\n## ", 1)[0]
     return re.findall(r"^\| `([a-z_]+)` \|", table, flags=re.MULTILINE)
 
 
@@ -349,14 +198,14 @@ def test_every_documented_field_is_emitted(binary, stub):
 
 def test_readme_jq_length(binary, stub, jq):
     data = json.dumps(run_json(binary, "scan", "--base-url", stub.url))
-    out = subprocess.run([jq, "length"], input=data, capture_output=True, text=True, check=True)
+    out = subprocess.run([jq, "length"], input=data, capture_output=True, text=True, encoding="utf-8", check=True)
     assert out.stdout.strip() == "3"
 
 
 def test_readme_jq_shortlist(binary, stub, jq):
     program = '.[] | select(.amount_usd >= 1000) | "\\(.amount_usd)\\t\\(.competition)\\t\\(.url)"'
     data = json.dumps(run_json(binary, "scan", "--base-url", stub.url))
-    out = subprocess.run([jq, "-r", program], input=data, capture_output=True, text=True, check=True)
+    out = subprocess.run([jq, "-r", program], input=data, capture_output=True, text=True, encoding="utf-8", check=True)
 
     lines = [line for line in out.stdout.splitlines() if line]
     # 2 comments → weight 2 → "medium" competition.
@@ -366,7 +215,7 @@ def test_readme_jq_shortlist(binary, stub, jq):
 def test_readme_jq_sort_by(binary, stub, jq):
     program = 'sort_by(-(.amount_usd // 0))[] | "\\(.amount_usd // "?")\\t\\(.repo) — \\(.title)"'
     data = json.dumps(run_json(binary, "scan", "--base-url", stub.url))
-    out = subprocess.run([jq, "-r", program], input=data, capture_output=True, text=True, check=True)
+    out = subprocess.run([jq, "-r", program], input=data, capture_output=True, text=True, encoding="utf-8", check=True)
 
     lines = [line for line in out.stdout.splitlines() if line]
     assert len(lines) == 3
